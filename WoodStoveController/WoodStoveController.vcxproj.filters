@@ -15,11 +15,14 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="WoodStoveController.ino" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="__vm\.WoodStoveController.vsarduino.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="WoodStoveController.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="WoodStoveController.ino" />
   </ItemGroup>
 </Project>
