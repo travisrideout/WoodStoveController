@@ -17,5 +17,12 @@
   <ItemGroup>
     <None Include="WSC_RemoteUI.ino" />
   </ItemGroup>
- 
+  <ItemGroup>
+    <ClInclude Include="WSC_RemoteUI.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="__vm\.WSC_RemoteUI.vsarduino.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>
