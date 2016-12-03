@@ -5,7 +5,7 @@
 #include <RF24.h>
 #include <printf.h>
 #include <nRF24L01.h>
-#include <Nextion.h>
+#include "NextionDisplay.h"
 #include <SoftwareSerial.h>
 #include <EEPROM.h>
 #include <avr/sleep.h>
@@ -14,13 +14,11 @@
 #define DHTTYPE DHT22
 
 //pin declarations
-const byte buttonPin = 2;
 const byte radioIRQ = 3;
 const byte nextionRx = 4;
 const byte nextionTx = 5;
 const byte nrf24Rx = 6;
 const byte nrf24Tx = 7;
-const byte displayPowerPin = 8;
 const byte DHTPIN = 12;
 const byte buzzerPin = 13;
 
@@ -31,14 +29,13 @@ const int screenTimeout = 30000;
 
 //Objects
 SoftwareSerial nextion(nextionRx, nextionTx);
-Nextion myNextion(nextion, 9600);
+NextionDisplay myNextion(nextion, 9600);
 RF24 radio(nrf24Rx, nrf24Tx);
 DHT dht(DHTPIN, DHTTYPE);
 
 //Variables
 volatile bool wake = false;
 volatile byte wdCount = 0;
-bool screenOn = false;
 byte page = 0;
 struct dataPacket {
 	float temperature;
@@ -52,7 +49,6 @@ struct feedback {
 
 //timers & counters
 byte tempReadCounter = 2;
-unsigned long screenTimeoutTimer;
 
 // Sleep declarations
 typedef enum { 
@@ -72,5 +68,3 @@ void setup_watchdog(uint8_t prescalar);
 //method declarations
 void readDHT();
 void do_sleep(void);
-
-

@@ -6,20 +6,14 @@
 
 #include "WSC_RemoteUI.h"
 
-// the setup function runs once when you press reset or power the board
-
 void setup() {
 	Serial.begin(115200);
 	printf_begin();
-
-	myNextion.init();
+	
 	dht.begin();
 	setup_watchdog(wdt_8s);
 
-	pinMode(buttonPin, INPUT_PULLUP);
 	pinMode(radioIRQ, INPUT_PULLUP);
-	pinMode(displayPowerPin, OUTPUT);
-	pinMode(buttonPin, OUTPUT);
 
 	// Setup and configure rf radio
 	radio.begin();
@@ -30,47 +24,29 @@ void setup() {
 	radio.openWritingPipe(pipes[1]);        // Both radios listen on the same pipes by default, and switch when writing
 	radio.openReadingPipe(1, pipes[0]);
 	radio.startListening();                 // Start listening
-	radio.printDetails();                   // Dump the configuration of the rf unit for debugging
+	//radio.printDetails();                   // Dump the configuration of the rf unit for debugging
 
 	readDHT();
-	screenTimeoutTimer = millis();
-	digitalWrite(displayPowerPin, HIGH);
-	screenOn = true;
-		
-	myNextion.setComponentText("t5", "Idle");
+	
+	myNextion.sendCommand("sleep=0");
+	delay(50);
+	myNextion.sendCommand("page 0");
+	delay(50);
+	myNextion.sendCommand("thsp=0");	//set screen sleep on no touch
+	//delay(50);
+	//myNextion.sendCommand("thup=1");	//screen autowake on touch	
+	//delay(50);
 }
 
 void loop() {
-	if (wake == true) {
-		wake = false;
-		screenTimeoutTimer = millis();
-		digitalWrite(displayPowerPin, HIGH);
-		screenOn = true;
-		Serial.println("Turning on Screen");
-	}
+	//if (wdCount > tempReadCounter) {
+	//	readDHT();
+	//	//sendData();
+	//	wdCount = 0;		
+	//}
 
-	if (wdCount > tempReadCounter) {
-		readDHT();
-		//sendData();
-		wdCount = 0;		
-	}
-
-	if (screenOn) {
-		GUIInput();
-	}
+	GUIInput();	
 	
-	if (millis() - screenTimeoutTimer > screenTimeout) {
-		digitalWrite(displayPowerPin, LOW);
-		screenOn = false;
-		Serial.println("Going to Sleep");
-		delay(50);
-		do_sleep();
-	}
-}
-
-void ISR_PowerButton() {
-	wake = true;
-	sleep_disable();
 }
 
 void setup_watchdog(uint8_t prescalar) {
@@ -86,15 +62,19 @@ ISR(WDT_vect) {
 	wdCount++;	
 }
 
+void ISR_ScreenWake() {
+	Serial.println("Woke from sleep");
+}
+
 void do_sleep(void) {
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN); // sleep mode is set here
 	sleep_enable();
-	attachInterrupt(digitalPinToInterrupt(buttonPin), ISR_PowerButton, FALLING);
+	attachInterrupt(digitalPinToInterrupt(nextionTx), ISR_ScreenWake, CHANGE);
 	WDTCSR |= _BV(WDIE);
 	sleep_mode();                        // System sleeps here
 										 // The WDT_vect interrupt wakes the MCU from here
 	sleep_disable();                     // System continues execution here when watchdog timed out  
-	detachInterrupt(digitalPinToInterrupt(buttonPin));
+	detachInterrupt(digitalPinToInterrupt(nextionTx));
 	page = 0;
 	WDTCSR &= ~_BV(WDIE);
 }
@@ -139,48 +119,77 @@ bool establishConnection() {
 	return true;
 }
 
-void getPage() {
-	byte page = 255;
-	while (page == 255) {
-		page = myNextion.pageId();
+void pageUpdate() {
+	switch (page) {
+	case 1: {
+		String update = "set_temp.val=" + String(data.setTemp);
+		myNextion.sendCommand(update.c_str());
+		//update room temp and humidity
+		//update state
+		//update date and time
+		break;
 	}
-	Serial.print("page ");
-	Serial.println(page);
+	case 2: {
+		//update state,fire temp, smoke, burn time, fans, air box temp, CO, and # cycles
+		break;
+	}
+	case 3: {
+		break;
+	}
+	case 4: {
+		break;
+	}
+	default:
+		break;
+	}
 }
 
 void GUIInput() {
 	String message = myNextion.listen();	
 	if (message != "") {
-		Serial.println(message);
-		screenTimeoutTimer = millis();
-	}	
-	if (message == "65 1 6 1 ffff ffff ffff") {
-		data.setTemp++;
-		myNextion.setComponentValue("set_temp", data.setTemp);		
+		Serial.println(myNextion.parseString(message));
 	}
-	if (message == "65 1 7 1 ffff ffff ffff") {
-		data.setTemp--;
-		myNextion.setComponentValue("set_temp", data.setTemp);
+		
+	switch (message[0]) {
+	case 0x00:
+		if (message[1] == 0xff && message[2] == 0xff && message[3] == 0xff) {
+			Serial.println("Invalid Command!");
+		}		
+		break;
+	case 0x01:	
+		break;
+	case 0x65:
+		if (message[1] == 1 && message[2] == 6) {
+			data.setTemp++;
+			String update = "set_temp.val=" + String(data.setTemp);
+			myNextion.sendCommand(update.c_str());				
+		} else if (message[1] == 1 && message[2] == 7) {
+			data.setTemp--;
+			String update = "set_temp.val=" + String(data.setTemp);
+			myNextion.sendCommand(update);
+		}
+		break;
+	case 0x66:
+		page = message[1];
+		Serial.print("page ");
+		Serial.println(page);
+		pageUpdate();
+		break;
+	case 0x86:
+		Serial.println("Screen went to sleep");
+		Serial.println("Going to Sleep");
+		delay(50);
+		do_sleep();
+		break;
+	case 0x87:
+		Serial.println("Screen woke up");
+		break;
+	default:
+		if (message != "") {
+			//Serial.println(message);
+			Serial.println(myNextion.parseString(message));
+			Serial.println("something else");
+		}
+		break;
 	}
-	if (message == "66 0 ffff ffff ffff") {
-		page = 0;
-	}
-	if (message == "66 1 ffff ffff ffff") {
-		page = 1;
-	}
-	if (message == "66 2 ffff ffff ffff") {
-		page = 2;
-	}
-	if (message == "66 3 ffff ffff ffff") {
-		page = 3;
-	}
-	if (message == "66 4 ffff ffff ffff") {
-		page = 4;
-	}
-	
-	/*if (myNextion.getComponentText("t5") != 0x70 + (String)"Idle") {
-		myNextion.setComponentText("t5", "Idle");
-		Serial.println("setting Idle Text");
-		delay(100);
-	}*/	
 }
