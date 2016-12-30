@@ -11,47 +11,58 @@
 #include <RF24.h>
 #include <printf.h>
 #include <nRF24L01.h>
+#include <PID_v1.h>
+#include <Rideout.h>
 
-#define DHTTYPE DHT11
+#define DHTTYPE DHT11   
 
-#define WLAN_SSID       "Rideout_2.4GHz"
-#define WLAN_PASS       "kj6608td"
-#define WLAN_SECURITY	WLAN_SEC_WEP
-#define AIO_USERNAME    "TravisRideout"
-#define AIO_KEY         "c490163b9b074329ba35cbe30bf6152e"
-#define FEED_PATH AIO_USERNAME "/feeds/woodstove"
-#define AIO_SERVER      "io.adafruit.com"
-#define AIO_SERVERPORT  1883                   // use 8883 for SSL
+const uint64_t pipes[2] = { 0xffcadbdacfLL, 0x5632867136LL };
 
-//pin declarations
-const int nrfIntPin = 2;	//interrupt pins = 2,3,18,19,20,21
-const int fanRelay = 4;
-const int DHTPIN = 5;
-const int thermoCLK = 6;
-const int thermoSO = 7;
-const int thermo1CS = 8;
-const int thermo2CS = 9;
-const int buzzer_pin = 10;
-const int smokePin = A0;
-const int CO_pin = A1;
+//pin declarations *interrupt pins = 2,3,18,19,20,21
+const byte encoder0PinA = 2;
+const byte encoder0PinB = 3;
+const byte fanRelay_Pin = 4;
+const byte DHT_Pin = 5;
+const byte thermoCLK = 6;
+const byte thermoSO = 7;
+const byte thermo1CS = 8;
+const byte thermo2CS = 9;
+const byte buzzer_Pin = 10;
+const byte damperPWM_Pin = 11;	
+const byte stokeFan_Pin = 12;	
+const byte damperDir_Pin = 13;
+const byte nrfInt_Pin = 18;
+const byte smoke_Pin = A0;
+const byte CO_pin = A1;
+const byte ce_Pin = 49;
+const byte cs_Pin = 53;
 
 //Constants - Thresholds
-const int chimney_Over_Temp_Threshold = 500;
+const int chimney_Over_Temp_Threshold = 550;
 const int he_Over_Temp_Threshold = 150;
-const byte chimney_Min_Temp_Threshold = 200;
+const byte chimney_Min_Temp_Threshold = 160;
 const int smoke_Threshold = 512;
 const int co_Threshold = 512;
 
 //Constants - Time
 const int readingFrequency = 10000;
 const int systemFrequency = 3000;
-const unsigned int publishFrequency = 3000;
+const unsigned int publishFrequency = 30000;
+
+//Constants - Motor Tunings
+const double tempKp = 10, tempKi = 5, tempKd = 2;
+const double damperKp = 4, damperKi = 4, damperKd = 1;
+const byte cpr = 64;
+const double ratio = 131.25;
+const byte deadband = 5;
+
+//Variables - Volatile
+volatile long encoder0Pos = 0;
 
 //Variables - Inputs - Sensors
 double chimneyTemp = 0;
-double heatExchangerTemp = 0;
-byte stokeFanSpeed_meas;
-byte damperValvePosition_meas;
+float heatExchangerTemp = 0;
+double damperValvePosition_meas = 0.0;
 float downStairsTemp = 60.0f;
 float downStairsHumidity = 30.0f;
 float upStairsTemp = 60.0f;
@@ -64,14 +75,18 @@ byte set_temp = 75;
 
 //Variables - Outputs
 bool fans = false;
-byte stokeFanSpeed = 0;		//speed in % 0-100
-byte damperValvePosition = 0; //position in % 0-100
+byte stokeFanPWM = 0;		//speed in % 0-100
 bool buzzer = false;
+double damperPWM = 0;
 
 //Variable - system
 byte state = 0;
 byte alarm_num = 0;
-byte heTempGoal = 30;
+double chimneyTempGoal = 60;
+double damperCMD = 0.0;		//4 turns @360deg per turn = 1440
+unsigned int tmp = 0;
+unsigned int Aold = 0;
+unsigned int Bnew = 0;
 
 //Variables - Working
 byte temp_slack = 3;
@@ -87,11 +102,16 @@ void setOutputs();
 void callback(char* topic, byte* payload, unsigned int length);
 
 //Objects
-DHT dht(DHTPIN, DHTTYPE);
+DHT dht(DHT_Pin, DHTTYPE);
 MAX6675 heatExchangerThermocouple(thermoCLK, thermo1CS, thermoSO);
 MAX6675 chimneyPipeThermocouple(thermoCLK, thermo2CS, thermoSO);
 WiFiEspClient client;
 PubSubClient mqttclient(AIO_SERVER, AIO_SERVERPORT, callback, client);
+RF24 radio(ce_Pin, cs_Pin);
+//regulates damper position to try and meet chimney temp goal
+PID tempPID(&chimneyTemp, &damperCMD, &chimneyTempGoal, tempKp, tempKi, tempKd, DIRECT);
+//regulates damper servo pwm to try and meet damper position command
+PID damperPID(&damperValvePosition_meas, &damperPWM, &damperCMD, damperKp, damperKi, damperKd, DIRECT);
 
 //enums
 enum states {
@@ -106,11 +126,32 @@ enum alarm_codes {
 	chimney_Over_Temp,
 	heatExchanger_Over_Temp,
 	smoke_present,
-	carbonMonoxide_present
+	carbonMonoxide_present,
+	out_of_fuel,
 };
 
 //structs
 struct state_params {
 	bool fans_cmd;		//low = off, high = on
-	double heatExchangerTemp_cmd;
+	double chimneyTemp_cmd;
 }off, idle, heat, alarm;
+
+struct COMS_OUT {
+	float DS_T;	//4
+	float DS_H;	//4
+	bool FAN;	//1
+	float HE_T;	//4
+	float C_T;	//4
+	int SMK;	//2
+	int CO;		//2
+	byte ALM;	//1
+	byte ST;	//1
+	byte DVP;	//1
+	byte SFS;	//1
+}GUI_Pub;	//25bytes
+
+struct COMS_IN {
+	float US_T;
+	float US_H;
+	byte SET_T;
+}GUI_Sub;
