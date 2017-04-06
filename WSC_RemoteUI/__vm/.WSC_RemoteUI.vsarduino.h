@@ -5,7 +5,7 @@
 	        all non-arduino files created by visual micro and all visual studio project or solution files can be freely deleted and are not required to compile a sketch (do not delete your own code!).
 	        note: debugger breakpoints are stored in '.sln' or '.asln' files, knowledge of last uploaded breakpoints is stored in the upload.vmps.xml file. Both files are required to continue a previous debug session without needing to compile and upload again
 	
-	Hardware: Arduino/Genuino Uno, Platform=avr, Package=arduino
+	Hardware: Arduino Pro or Pro Mini w/ ATmega328 (5V, 16 MHz), Platform=avr, Package=arduino
 */
 
 #ifndef _VSARDUINO_H_
@@ -13,8 +13,8 @@
 #define __AVR_ATmega328p__
 #define __AVR_ATmega328P__
 #define F_CPU 16000000L
-#define ARDUINO 106012
-#define ARDUINO_AVR_UNO
+#define ARDUINO 10801
+#define ARDUINO_AVR_PRO
 #define ARDUINO_ARCH_AVR
 #define __cplusplus 201103L
 #define __AVR__
@@ -23,7 +23,12 @@
 #define __extension__
 #define __inline__
 #define __volatile__
-#define GCC_VERSION 40801
+#define GCC_VERSION 40902
+
+#define __cplusplus 201103L
+#undef __cplusplus
+#define __cplusplus 201103L
+
 #define volatile(va_arg) 
 #define _CONST
 #define __builtin_va_start
@@ -32,15 +37,25 @@
 #define NOINLINE __attribute__((noinline))
 #define prog_void
 #define PGM_VOID_P int
+
+
 #ifndef __builtin_constant_p
 	#define __builtin_constant_p __attribute__((__const__))
 #endif
 #ifndef __builtin_strlen
 	#define __builtin_strlen  __attribute__((__const__))
 #endif
+
 #define NEW_H
 typedef void *__builtin_va_list;
-extern "C" void __cxa_pure_virtual() {;}
+//extern "C" void __cxa_pure_virtual() {;}
+
+typedef int div_t;
+typedef int ldiv_t;
+
+
+typedef void *__builtin_va_list;
+//extern "C" void __cxa_pure_virtual() {;}
 
 
 

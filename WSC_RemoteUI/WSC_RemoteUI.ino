@@ -8,53 +8,63 @@
 
 void setup() {
 	Serial.begin(115200);
-	printf_begin();
-	
-	//dht.begin();
+		
+	dht.begin();
 	setup_watchdog(wdt_8s);
 
 	pinMode(radioIRQ, INPUT_PULLUP);
 	pinMode(buzzerPin, OUTPUT);
 
 	// Setup and configure rf radio
-	//radio.begin();
-	////radio.setAutoAck(1);                    // Ensure autoACK is enabled
-	////radio.enableAckPayload();               // Allow optional ack payloads
-	//radio.setRetries(0, 15);                 // Smallest time between retries, max no. of retries
-	//radio.setPayloadSize(1);                // Here we are sending 1-byte payloads to test the call-response speed
-	//radio.openWritingPipe(pipes[0]);        // Both radios listen on the same pipes by default, and switch when writing
-	//radio.openReadingPipe(1, pipes[1]);
-	//radio.startListening();                 // Start listening
-	//radio.printDetails();                   // Dump the configuration of the rf unit for debugging
-
-	//readDHT();
-	
+	printf_begin();
+	radio.begin();
+	radio.setPALevel(RF24_PA_MAX);
+	//radio.setAutoAck(1);                    // Ensure autoACK is enabled
+	//radio.enableAckPayload();               // Allow optional ack payloads
+	radio.setRetries(0, 15);
+	radio.openWritingPipe(pipes[0]);        // Both radios listen on the same pipes by default, and switch when writing
+	radio.openReadingPipe(1, pipes[1]);
+	radio.startListening();                 // Start listening
+	radio.printDetails();                   // Dump the configuration of the rf unit for debugging
+		
 	myNextion.sendCommand("sleep=0");
 	delay(50);
 	myNextion.sendCommand("page 0");
 	delay(50);
-	myNextion.sendCommand("thsp=5");	//set screen sleep on no touch after x sec
+	myNextion.sendCommand("thsp=30");	//set screen sleep on no touch after x sec
 	delay(50);
 	myNextion.sendCommand("thup=1");	//screen autowake on touch	
 	delay(50);
+
+	readDHT();
 }
 
 void loop() {
 	if (wdCount > tempReadCounter) {
-		//readDHT();		
-		//sendRF();
-		wdCount = 0;		
+		readDHT();		
+		sendRF();
+		wdCount = 0;	
+		if (awake) {
+			pageUpdate();
+		}
 	}
 
-	if (millis() - refreshTime > screenRefreshRate) {
-		//sendRF();
-	}
+	if (awake) {
+		if (millis() - refreshTime > screenRefreshRate) {
+			refreshTime = millis();
+			sendRF();
+		}
 
-	/*if (readRF()) {
-		pageUpdate();
-	}*/	
+		if (readRF()) {
+			pageUpdate();
+		}
+	} else {
+		delay(50);
+		do_sleep();
+	}
 
 	GUIInput();
+	readRF();
 }
 
 void setup_watchdog(uint8_t prescalar) {
@@ -75,6 +85,7 @@ void ISR_ScreenWake() {
 }
 
 void do_sleep(void) {
+	Serial.println("Going to sleep");
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN); // sleep mode is set here
 	sleep_enable();
 	attachInterrupt(digitalPinToInterrupt(nextionTx), ISR_ScreenWake, CHANGE);
@@ -92,7 +103,12 @@ void readDHT() {
 
 	if (isnan(data.humidity) || isnan(data.temperature)) {
 		Serial.println("Failed to read from DHT sensor!");
-	}
+	} else {
+		Serial.print("Read from DHT sensor: ");
+		Serial.print(data.temperature);
+		Serial.print(", ");
+		Serial.println(data.humidity);
+	}	
 }
 
 bool sendRF() {
@@ -105,11 +121,14 @@ bool sendRF() {
 	radio.stopListening();
 	if (!radio.write(&WSC_Pub, sizeof(WSC_Pub))) {
 		Serial.println("Failed to send message");
+		radio.startListening();
 		return false;
 	}
-	//TODO: Decide whether GUI should provide warnings, if so how to handle them and manage battery
 	radio.startListening();
+	//TODO: Decide whether GUI should provide warnings, if so how to handle them and manage battery
 	//radio.powerDown();
+
+	Serial.println("Sent Radio Message");	
 	return true;
 }
 
@@ -118,6 +137,7 @@ bool readRF() {
 		return false;
 	}
 
+	Serial.println("Got Radio message");
 	while (radio.available()) {
 		radio.read(&WSC_Sub, sizeof(WSC_Sub));
 	}
@@ -146,16 +166,53 @@ bool establishConnection() {
 void pageUpdate() {	
 	switch (page) {
 	case 1: {
-		Serial.println("updating set temp");
 		String update = "set_temp.val=" + String(data.setTemp);
 		myNextion.sendCommand(update.c_str());
-		//update room temp and humidity
-		//update state
-		//update date and time
+		update = "temp.txt=\"" + String(data.temperature) + "\"";
+		myNextion.sendCommand(update.c_str());
+		update = "humidity.val=" + String((byte)data.humidity);
+		myNextion.sendCommand(update.c_str());
+		if (WSC_Sub.ST == 0) {
+			update = String("state.txt=\"OFF\"");
+		} else if (WSC_Sub.ST == 1) {
+			update = String("state.txt=\"IDLE\"");
+		} else if (WSC_Sub.ST == 2) {
+			update = String("state.txt=\"HEATING\"");
+		} else if (WSC_Sub.ST == 3) {
+			update = String("state.txt=\"ALARM\"");
+		}
 		break;
 	}
 	case 2: {
-		//update state,fire temp, smoke, burn time, fans, air box temp, CO, and # cycles
+		String update;
+		if (WSC_Sub.ST == 0) {
+			update = String("state.txt=\"OFF\"");
+		} else if (WSC_Sub.ST == 1) {
+			update = String("state.txt=\"IDLE\"");
+		} else if (WSC_Sub.ST == 2) {
+			update = String("state.txt=\"HEATING\"");
+		} else if (WSC_Sub.ST == 3) {
+			update = String("state.txt=\"ALARM\"");
+		}
+		myNextion.sendCommand(update.c_str()); 
+		if (WSC_Sub.FAN == 0) {
+			update = "fans.txt=\"OFF\"";
+		} else {
+			update = "fans.txt=\"ON\"";
+		}
+		myNextion.sendCommand(update.c_str());
+		update = "chimney_temp.txt=\"" + String(WSC_Sub.C_T) +"\"";
+		myNextion.sendCommand(update.c_str());
+		update = "he_temp.txt=\"" + String(WSC_Sub.HE_T) + "\"";
+		myNextion.sendCommand(update.c_str());
+		update = "smoke.txt=\"" + String(WSC_Sub.SMK) + "\"";
+		myNextion.sendCommand(update.c_str());
+		update = "co.txt=\"" + String(WSC_Sub.CO) + "\"";
+		myNextion.sendCommand(update.c_str());
+		update = "stoke.txt=\"" + String(WSC_Sub.SFS) + "\"";
+		myNextion.sendCommand(update.c_str());
+		update = "damper.txt=\"" + String(WSC_Sub.DVP) + "\"";
+		myNextion.sendCommand(update.c_str());
 		break;
 	}
 	case 3: {
@@ -193,18 +250,22 @@ bool GUIInput() {
 		pageUpdate();
 		break;
 	case 0x66:
-		page = message[1];
-		Serial.print("page ");
-		Serial.println(page);
-		pageUpdate();
+		if (page != message[1]) {
+			page = message[1];
+			Serial.print("page ");
+			Serial.println(page);
+			pageUpdate();
+		}		
 		break;
 	case 0xff86:		
 		Serial.println("Going to Sleep");
+		awake = false;
 		delay(50);
-		//do_sleep();
+		do_sleep();
 		break;
 	case 0xff87:
 		Serial.println("Screen woke up");
+		awake = true;
 		delay(50);
 		myNextion.sendCommand("page 0");
 		break;

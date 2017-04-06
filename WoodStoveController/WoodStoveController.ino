@@ -7,6 +7,9 @@
 //TODO: Status LED
 //TODO: Reset button
 //TODO: Running out of fuel recognization
+//TODO: Damper Servo homing
+//TODO: cooldown state
+//TODO: Fire start aid mode
 
 #include "WoodStoveController.h"
 
@@ -21,18 +24,19 @@ void setup() {
 	pinMode(buzzer_Pin, OUTPUT);
 	pinMode(damperDir_Pin, OUTPUT);
 	pinMode(damperDir_Pin, OUTPUT);
-	pinMode(encoder0PinA, INPUT);
-	pinMode(encoder0PinB, INPUT);
+	pinMode(encoder0PinA, INPUT_PULLUP);
+	pinMode(encoder0PinB, INPUT_PULLUP);
 
 	digitalWrite(fanRelay_Pin, HIGH);
 
 	Serial.println(F("Wood Stove Controller"));
-
+		
 	// Setup and configure rf radio
+	printf_begin();
 	radio.begin();
 	radio.setPALevel(RF24_PA_MAX);
-	//radio.setAutoAck(1);                    // Ensure autoACK is enabled
-	//radio.enableAckPayload();               // Allow optional ack payloads
+	////radio.setAutoAck(1);                    // Ensure autoACK is enabled
+	////radio.enableAckPayload();               // Allow optional ack payloads
 	radio.setRetries(0, 15);                 // Smallest time between retries, max no. of retries
 	radio.openWritingPipe(pipes[1]);        // Both radios listen on the same pipes by default, and switch when writing
 	radio.openReadingPipe(1, pipes[0]);
@@ -55,23 +59,23 @@ void setup() {
 
 	Serial.println("WiFi connected");
 	Serial.print("IP address: "); 
-	Serial.println(WiFi.localIP());
+	Serial.println(WiFi.localIP()); 
 
 	InitializeStateVariables();
 
-	attachInterrupt(0, doEncoderA, CHANGE);
+	/*attachInterrupt(0, doEncoderA, CHANGE);
 	attachInterrupt(1, doEncoderB, CHANGE);
-
-	tempPID.SetOutputLimits(0, 1440);
+*/
+	tempPID.SetOutputLimits(0, damperMaxPosition);
 	damperPID.SetOutputLimits(-255, 255);
 	
 	tempPID.SetMode(AUTOMATIC);
 	damperPID.SetMode(AUTOMATIC);
 }
 
-void loop() {
+void loop() {		
 	MQTT_connect();
-		
+
 	if (millis() - readTime > readingFrequency) {
 		readSensors();
 		tempPID.Compute();		
@@ -79,12 +83,14 @@ void loop() {
 		if (safetyCheck() != 0) {
 			state = alarm_state;
 			Serial.println("Alarm set");
+		} else if (state == alarm_state) {
+			state = off_state;
 		}
 	}
 
-	//Check each changes in position
+	//Check each change in position
 	if (tmp != encoder0Pos) {
-		damperValvePosition_meas = encoder0Pos * 360 / (cpr * ratio);
+		damperPosition_meas = encoder0Pos * 360 / (cpr * ratio);
 		tmp = encoder0Pos;
 	}
 	
@@ -92,6 +98,7 @@ void loop() {
 	
 	if (millis() - stateTime > systemFrequency) {		
 		FSM();
+		computeOutputs();
 		setOutputs();
 		stateTime = millis();
 	}
@@ -105,6 +112,7 @@ void loop() {
 	if (readRF()) {
 		sendRF();
 	}
+	
 	
 	mqttclient.loop();
 }
@@ -123,7 +131,7 @@ void InitializeStateVariables() {
 	};
 
 	idle = {
-		LOW,	//fans
+		HIGH,	//fans
 		300		//chimneyTemp_cmd
 	};	
 
@@ -165,32 +173,10 @@ void MQTT_connect() {
 }
 
 void print_debug() {
-	Serial.print(F("UST="));
-	Serial.print(upStairsTemp);
-	Serial.print(F(",USH="));
-	Serial.print(upStairsHumidity);
-	Serial.print(F(",DST="));
-	Serial.print(downStairsTemp);
-	Serial.print(F(",DSH="));
-	Serial.print(downStairsHumidity);
-	Serial.print(F("FAN="));
-	Serial.print(fans);
-	Serial.print(F(",HET="));
-	Serial.print(heatExchangerTemp);
-	Serial.print(F(",CT="));
-	Serial.print(chimneyTemp);	
-	Serial.print(F(",SMK="));
-	Serial.print(smoke);
-	Serial.print(F(",CO="));
-	Serial.print(carbonMonoxide);
-	Serial.print(F(",ALM="));
-	Serial.print(alarm_num);
-	Serial.print(F(",ST="));
-	Serial.print(state);
-	Serial.print(F(",DVP="));
-	Serial.print(damperValvePosition_meas);
-	Serial.print(F(",SFS="));
-	Serial.println(stokeFanPWM);
+	Serial.print("DamperCMD = ");
+	Serial.print(damperCMD);
+	Serial.print(", DamperPWM= ");
+	Serial.println(damperPWM);
 }
 
 bool publish() {
@@ -205,12 +191,12 @@ bool publish() {
 	String string9 = ",CO=" + String(carbonMonoxide);
 	String string10 = ",ALM=" + String(alarm_num);
 	String string11 = ",ST=" + String(state);
-	String string12 = ",DVP=" + String(damperValvePosition_meas);
+	String string12 = ",DVP=" + String(damperPosition_meas);
 	String string13 = ",SFS=" + String(stokeFanPWM);
 
 	String buf = string1 + string2 + string3 + string4 + string5 + string6
 		+ string7 + string8 + string9 + string10 + string11 + string12 + string13;
-	char pub[128];
+	char pub[256];	//adjust pubsub to accept messages of this length
 	buf.toCharArray(pub, sizeof(pub));
 	Serial.println(pub);
 
@@ -221,11 +207,11 @@ bool publish() {
 	}
 }
 
-bool readRF() {
+bool readRF() {	
 	if (!radio.available()) {
 		return false;
 	}
-
+	Serial.println("Got radio message from GUI");
 	while (radio.available()) {
 		radio.read(&GUI_Sub, sizeof(GUI_Sub));
 	}
@@ -240,16 +226,20 @@ bool readRF() {
 bool sendRF() {
 	GUI_Pub.DS_T = downStairsTemp;
 	GUI_Pub.DS_H = downStairsHumidity;
+	GUI_Pub.FAN = fans;
 	GUI_Pub.HE_T = heatExchangerTemp;
 	GUI_Pub.C_T = chimneyTemp;
 	GUI_Pub.SMK = smoke;
 	GUI_Pub.CO = carbonMonoxide;
 	GUI_Pub.ALM = alarm_num;
 	GUI_Pub.ST = state;
+	GUI_Pub.DVP = 0; // TODO: Need to get these measurements and do conversion
+	GUI_Pub.SFS = 0; //	
 
 	radio.stopListening();
 	if (!radio.write(&GUI_Pub, sizeof(GUI_Pub))) {
 		Serial.println("Failed to send message");
+		radio.startListening();
 		return false;
 	}
 	radio.startListening();
@@ -290,18 +280,23 @@ byte safetyCheck() {
 
 void FSM() {
 	if (state != alarm_state) {
-		if (chimneyTemp < chimney_Min_Temp_Threshold) {
+		if (chimneyTemp < chimney_Off_Temp_Threshold && heatExchangerTemp < upStairsTemp + 30) {
 			state = off_state;
-		} else if (upStairsTemp < set_temp) {
+		} else if (upStairsTemp < set_temp && chimneyTemp > chimney_On_Temp_Threshold) {
 			state = heat_state;
 		} else if (upStairsTemp > set_temp + temp_slack) {
 			state = idle_state;
 		}
 	}
 	
-	if (state == alarm_state) {
-		fans = alarm.fans_cmd;
+	if (state == alarm_state) {		
 		chimneyTempGoal = alarm.chimneyTemp_cmd;
+		if (alarm_num != smoke_present && alarm_num != carbonMonoxide_present
+			&& chimneyTemp > chimney_Off_Temp_Threshold) {
+			fans = HIGH;
+		} else {
+			fans = alarm.fans_cmd;
+		}
 	} else if (state == off_state) {
 		fans = off.fans_cmd;
 		chimneyTempGoal = off.chimneyTemp_cmd;
@@ -314,10 +309,18 @@ void FSM() {
 	}	
 }
 
+void computeOutputs() {
+	if (damperPosition_meas > stokeFanThreshold) {
+		stokeFanPWM = map((damperPosition_meas), stokeFanThreshold,damperMaxPosition, 0, 255);
+	} else {
+		stokeFanPWM = 0;
+	}
+	
+}
+
 void setOutputs() {
 	digitalWrite(fanRelay_Pin, !fans);	//inverted
 	analogWrite(damperPWM_Pin, damperPWM);
-	stokeFanPWM = map((damperPWM - 123), 0, 122, 0, 255);	//may need to map this differently
 	analogWrite(stokeFan_Pin, stokeFanPWM);
 
 	if (state == alarm_state) {
@@ -326,7 +329,7 @@ void setOutputs() {
 }
 
 void damperServoLoop() {
-	if (abs(damperValvePosition_meas - damperCMD) > deadband) {
+	if (abs(damperPosition_meas - damperCMD) > deadband) {
 		damperPID.Compute();
 		if (damperPWM > 0) {
 			digitalWrite(damperDir_Pin, HIGH);

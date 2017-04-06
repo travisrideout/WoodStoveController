@@ -34,15 +34,20 @@ const byte damperDir_Pin = 13;
 const byte nrfInt_Pin = 18;
 const byte smoke_Pin = A0;
 const byte CO_pin = A1;
-const byte ce_Pin = 49;
-const byte cs_Pin = 53;
+const byte nrf24Rx = 48;
+const byte nrf24Tx = 49;
+const byte miso = 50;
+const byte mosi = 51;
+const byte sck = 52;
 
 //Constants - Thresholds
 const int chimney_Over_Temp_Threshold = 550;
 const int he_Over_Temp_Threshold = 150;
-const byte chimney_Min_Temp_Threshold = 160;
+const byte chimney_Off_Temp_Threshold = 120;
+const byte chimney_On_Temp_Threshold = 160;
 const int smoke_Threshold = 512;
 const int co_Threshold = 512;
+const int stokeFanThreshold = 864;	// damperMaxPosition * 0.6;
 
 //Constants - Time
 const int readingFrequency = 10000;
@@ -55,6 +60,7 @@ const double damperKp = 4, damperKi = 4, damperKd = 1;
 const byte cpr = 64;
 const double ratio = 131.25;
 const byte deadband = 5;
+const int damperMaxPosition = 1440;	//360deg/rev * 4 rev
 
 //Variables - Volatile
 volatile long encoder0Pos = 0;
@@ -62,7 +68,7 @@ volatile long encoder0Pos = 0;
 //Variables - Inputs - Sensors
 double chimneyTemp = 0;
 float heatExchangerTemp = 0;
-double damperValvePosition_meas = 0.0;
+double damperPosition_meas = 0.0;
 float downStairsTemp = 60.0f;
 float downStairsHumidity = 30.0f;
 float upStairsTemp = 60.0f;
@@ -107,11 +113,11 @@ MAX6675 heatExchangerThermocouple(thermoCLK, thermo1CS, thermoSO);
 MAX6675 chimneyPipeThermocouple(thermoCLK, thermo2CS, thermoSO);
 WiFiEspClient client;
 PubSubClient mqttclient(AIO_SERVER, AIO_SERVERPORT, callback, client);
-RF24 radio(ce_Pin, cs_Pin);
+RF24 radio(nrf24Rx, nrf24Tx);
 //regulates damper position to try and meet chimney temp goal
 PID tempPID(&chimneyTemp, &damperCMD, &chimneyTempGoal, tempKp, tempKi, tempKd, DIRECT);
 //regulates damper servo pwm to try and meet damper position command
-PID damperPID(&damperValvePosition_meas, &damperPWM, &damperCMD, damperKp, damperKi, damperKd, DIRECT);
+PID damperPID(&damperPosition_meas, &damperPWM, &damperCMD, damperKp, damperKi, damperKd, DIRECT);
 
 //enums
 enum states {
